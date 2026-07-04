@@ -19,30 +19,47 @@ const ERROR_406 = {"ok":false,"error_code":406,"description":"Bad Request: file 
 const ERROR_407 = {"ok":false,"error_code":407,"description":"Bad Request: file hash invalid by atob"};
 const ERROR_408 = {"ok":false,"error_code":408,"description":"Bad Request: mode not in [attachment, inline]"};
 
-// ---------- Event Listener ---------- // 
+// ---------- Configuration Resolver ---------- //
 
-addEventListener('fetch', event => {
-    event.respondWith(handleRequest(event))
-});
+function getConfig(env) {
+    return {
+        BOT_TOKEN: env.BOT_TOKEN || BOT_TOKEN,
+        BOT_WEBHOOK: env.BOT_WEBHOOK || BOT_WEBHOOK,
+        BOT_SECRET: env.BOT_SECRET || BOT_SECRET,
+        BOT_OWNER: env.BOT_OWNER ? parseInt(env.BOT_OWNER, 10) : BOT_OWNER,
+        BOT_CHANNEL: env.BOT_CHANNEL ? parseInt(env.BOT_CHANNEL, 10) : BOT_CHANNEL,
+        SIA_SECRET: env.SIA_SECRET || SIA_SECRET,
+        PUBLIC_BOT: env.PUBLIC_BOT !== undefined ? (env.PUBLIC_BOT === 'true' || env.PUBLIC_BOT === true) : PUBLIC_BOT
+    };
+}
 
-async function handleRequest(event) {
-    const url = new URL(event.request.url);
+// ---------- Export Default Entrypoint ---------- // 
+
+export default {
+    async fetch(request, env, ctx) {
+        return handleRequest(request, env, ctx);
+    }
+};
+
+async function handleRequest(request, env, ctx) {
+    const config = getConfig(env);
+    const url = new URL(request.url);
     const file = url.searchParams.get('file');
     const mode = url.searchParams.get('mode') || "attachment";
      
-    if (url.pathname === BOT_WEBHOOK) {return Bot.handleWebhook(event)}
-    if (url.pathname === '/registerWebhook') {return Bot.registerWebhook(event, url, BOT_WEBHOOK, BOT_SECRET)}
-    if (url.pathname === '/unregisterWebhook') {return Bot.unregisterWebhook(event)}
-    if (url.pathname === '/getMe') {return new Response(JSON.stringify(await Bot.getMe()), {headers: HEADERS_ERRR, status: 202})}
+    if (url.pathname === config.BOT_WEBHOOK) {return Bot.handleWebhook(request, env, ctx)}
+    if (url.pathname === '/registerWebhook') {return Bot.registerWebhook(request, url, env)}
+    if (url.pathname === '/unregisterWebhook') {return Bot.unregisterWebhook(request, env)}
+    if (url.pathname === '/getMe') {return new Response(JSON.stringify(await Bot.getMe(env)), {headers: HEADERS_ERRR, status: 202})}
 
     if (!file) {return Raise(ERROR_404, 404);}
     if (!["attachment", "inline"].includes(mode)) {return Raise(ERROR_408, 404)}
-    if (!WHITE_METHODS.includes(event.request.method)) {return Raise(ERROR_405, 405);}
-    try {await Cryptic.deHash(file)} catch {return Raise(ERROR_407, 404)}
+    if (!WHITE_METHODS.includes(request.method)) {return Raise(ERROR_405, 405);}
+    try {await Cryptic.deHash(file, config.SIA_SECRET)} catch {return Raise(ERROR_407, 404)}
 
-    const channel_id = BOT_CHANNEL;
-    const file_id = await Cryptic.deHash(file);
-    const retrieve = await RetrieveFile(channel_id, file_id);
+    const channel_id = config.BOT_CHANNEL;
+    const file_id = await Cryptic.deHash(file, config.SIA_SECRET);
+    const retrieve = await RetrieveFile(channel_id, file_id, env);
     if (retrieve.error_code) {return await Raise(retrieve, retrieve.error_code)};
 
     const rdata = retrieve[0]
@@ -52,7 +69,7 @@ async function handleRequest(event) {
 
     return new Response(rdata, {
         status: 200, headers: {
-            "Content-Disposition": `${mode}; filename=${rname}`, // inline;
+            "Content-Disposition": `${mode}; filename="${rname}"`,
             "Content-Length": rsize,
             "Content-Type": rtype,
             ...HEADERS_FILE
@@ -62,9 +79,9 @@ async function handleRequest(event) {
 
 // ---------- Retrieve File ---------- //
 
-async function RetrieveFile(channel_id, message_id) {
+async function RetrieveFile(channel_id, message_id, env) {
     let  fID; let fName; let fType; let fSize; let fLen;
-    let data = await Bot.editMessage(channel_id, message_id, await UUID());
+    let data = await Bot.editMessage(channel_id, message_id, await UUID(), env);
     if (data.error_code){return data}
     
     if (data.document){
@@ -95,10 +112,10 @@ async function RetrieveFile(channel_id, message_id) {
         return ERROR_406
     }
 
-    const file = await Bot.getFile(fID)
+    const file = await Bot.getFile(fID, env)
     if (file.error_code){return file}
 
-    return [await Bot.fetchFile(file.file_path), fName, fSize, fType];
+    return [await Bot.fetchFile(file.file_path, env), fName, fSize, fType];
 }
 
 // ---------- Raise Error ---------- //
@@ -128,14 +145,14 @@ class Cryptic {
     return salt;
   }
 
-  static async getKey(salt, iterations = 1000, keyLength = 32) {
+  static async getKey(salt, siaSecret, iterations = 1000, keyLength = 32) {
     const key = new Uint8Array(keyLength);
     for (let i = 0; i < keyLength; i++) {
-        key[i] = (SIA_SECRET.charCodeAt(i % SIA_SECRET.length) + salt.charCodeAt(i % salt.length)) % 256;
+        key[i] = (siaSecret.charCodeAt(i % siaSecret.length) + salt.charCodeAt(i % salt.length)) % 256;
     }
     for (let j = 0; j < iterations; j++) {
         for (let i = 0; i < keyLength; i++) {
-            key[i] = (key[i] + SIA_SECRET.charCodeAt(i % SIA_SECRET.length) + salt.charCodeAt(i % salt.length)) % 256;
+            key[i] = (key[i] + siaSecret.charCodeAt(i % siaSecret.length) + salt.charCodeAt(i % salt.length)) % 256;
         }
     }
     return key;
@@ -170,20 +187,20 @@ class Cryptic {
     return output;
   }
 
-  static async Hash(text) {
+  static async Hash(text, siaSecret) {
     const salt = await this.getSalt();
-    const key = await this.getKey(salt);
+    const key = await this.getKey(salt, siaSecret);
     const encoded = String(text).split('').map((char, index) => {
         return String.fromCharCode(char.charCodeAt(0) ^ key[index % key.length]);
     }).join('');
     return await this.baseEncode(salt + encoded);
   }
 
-  static async deHash(hashed) {
+  static async deHash(hashed, siaSecret) {
     const decoded = await this.baseDecode(hashed);
     const salt = decoded.substring(0, 16);
     const encoded = decoded.substring(16);
-    const key = await this.getKey(salt);
+    const key = await this.getKey(salt, siaSecret);
     const text = encoded.split('').map((char, index) => {
         return String.fromCharCode(char.charCodeAt(0) ^ key[index % key.length]);
     }).join('');
@@ -194,122 +211,127 @@ class Cryptic {
 // ---------- Telegram Bot ---------- //
 
 class Bot {
-  static async handleWebhook(event) {
-    if (event.request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== BOT_SECRET) {
+  static async handleWebhook(request, env, ctx) {
+    const config = getConfig(env);
+    if (request.headers.get('X-Telegram-Bot-Api-Secret-Token') !== config.BOT_SECRET) {
       return new Response('Unauthorized', { status: 403 })
     }
-    const update = await event.request.json()
-    event.waitUntil(this.Update(event, update))
+    const update = await request.json()
+    ctx.waitUntil(this.Update(request, env, ctx, update))
     return new Response('Ok')
   }
 
-  static async registerWebhook(event, requestUrl, suffix, secret) {
-    const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${suffix}`
-    const response = await fetch(await this.apiUrl('setWebhook', { url: webhookUrl, secret_token: secret }))
+  static async registerWebhook(request, requestUrl, env) {
+    const config = getConfig(env);
+    const webhookUrl = `${requestUrl.protocol}//${requestUrl.hostname}${config.BOT_WEBHOOK}`
+    const response = await fetch(await this.apiUrl(env, 'setWebhook', { url: webhookUrl, secret_token: config.BOT_SECRET }))
     return new Response(JSON.stringify(await response.json()), {headers: HEADERS_ERRR})
   }
 
-  static async unregisterWebhook(event) { 
-    const response = await fetch(await this.apiUrl('setWebhook', { url: '' }))
+  static async unregisterWebhook(request, env) { 
+    const response = await fetch(await this.apiUrl(env, 'setWebhook', { url: '' }))
     return new Response(JSON.stringify(await response.json()), {headers: HEADERS_ERRR})
   }
 
-  static async getMe() {
-    const response = await fetch(await this.apiUrl('getMe'))
+  static async getMe(env) {
+    const response = await fetch(await this.apiUrl(env, 'getMe'))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async sendMessage(chat_id, reply_id, text, reply_markup=[]) {
-    const response = await fetch(await this.apiUrl('sendMessage', {chat_id: chat_id, reply_to_message_id: reply_id, parse_mode: 'markdown', text, reply_markup: JSON.stringify({inline_keyboard: reply_markup})}))
+  static async sendMessage(chat_id, reply_id, text, reply_markup=[], env) {
+    const response = await fetch(await this.apiUrl(env, 'sendMessage', {chat_id: chat_id, reply_to_message_id: reply_id, parse_mode: 'markdown', text, reply_markup: JSON.stringify({inline_keyboard: reply_markup})}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async sendDocument(chat_id, file_id) {
-    const response = await fetch(await this.apiUrl('sendDocument', {chat_id: chat_id, document: file_id}))
+  static async sendDocument(chat_id, file_id, env) {
+    const response = await fetch(await this.apiUrl(env, 'sendDocument', {chat_id: chat_id, document: file_id}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async sendPhoto(chat_id, file_id) {
-    const response = await fetch(await this.apiUrl('sendPhoto', {chat_id: chat_id, photo: file_id}))
+  static async sendPhoto(chat_id, file_id, env) {
+    const response = await fetch(await this.apiUrl(env, 'sendPhoto', {chat_id: chat_id, photo: file_id}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async editMessage(channel_id, message_id, caption_text) {
-      const response = await fetch(await this.apiUrl('editMessageCaption', {chat_id: channel_id, message_id: message_id, caption: caption_text}))
+  static async editMessage(channel_id, message_id, caption_text, env) {
+      const response = await fetch(await this.apiUrl(env, 'editMessageCaption', {chat_id: channel_id, message_id: message_id, caption: caption_text}))
       if (response.status == 200) {return (await response.json()).result;
       } else {return await response.json()}
   }
 
-  static async answerInlineArticle(query_id, title, description, text, reply_markup=[], id='1') {
+  static async answerInlineArticle(query_id, title, description, text, reply_markup=[], id='1', env) {
     const data = [{type: 'article', id: id, title: title, thumbnail_url: "https://i.ibb.co/5s8hhND/dac5fa134448.png", description: description, input_message_content: {message_text: text, parse_mode: 'markdown'}, reply_markup: {inline_keyboard: reply_markup}}];
-    const response = await fetch(await this.apiUrl('answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
+    const response = await fetch(await this.apiUrl(env, 'answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async answerInlineDocument(query_id, title, file_id, mime_type, reply_markup=[], id='1') {
+  static async answerInlineDocument(query_id, title, file_id, mime_type, reply_markup=[], id='1', env) {
     const data = [{type: 'document', id: id, title: title, document_file_id: file_id, mime_type: mime_type, description: mime_type, reply_markup: {inline_keyboard: reply_markup}}];
-    const response = await fetch(await this.apiUrl('answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
+    const response = await fetch(await this.apiUrl(env, 'answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async answerInlinePhoto(query_id, title, photo_id, reply_markup=[], id='1') {
+  static async answerInlinePhoto(query_id, title, photo_id, reply_markup=[], id='1', env) {
     const data = [{type: 'photo', id: id, title: title, photo_file_id: photo_id, reply_markup: {inline_keyboard: reply_markup}}];
-    const response = await fetch(await this.apiUrl('answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
+    const response = await fetch(await this.apiUrl(env, 'answerInlineQuery', {inline_query_id: query_id, results: JSON.stringify(data), cache_time: 1}))
     if (response.status == 200) {return (await response.json()).result;
     } else {return await response.json()}
   }
 
-  static async getFile(file_id) {
-      const response = await fetch(await this.apiUrl('getFile', {file_id: file_id}))
+  static async getFile(file_id, env) {
+      const response = await fetch(await this.apiUrl(env, 'getFile', {file_id: file_id}))
       if (response.status == 200) {return (await response.json()).result;
       } else {return await response.json()}
   }
 
-  static async fetchFile(file_path) {
-      const file = await fetch(`https://api.telegram.org/file/bot${BOT_TOKEN}/${file_path}`);
+  static async fetchFile(file_path, env) {
+      const config = getConfig(env);
+      const file = await fetch(`https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file_path}`);
       return await file.arrayBuffer()
   }
 
-  static async apiUrl (methodName, params = null) {
+  static async apiUrl (env, methodName, params = null) {
+      const config = getConfig(env);
       let query = ''
       if (params) {query = '?' + new URLSearchParams(params).toString()}
-      return `https://api.telegram.org/bot${BOT_TOKEN}/${methodName}${query}`
+      return `https://api.telegram.org/bot${config.BOT_TOKEN}/${methodName}${query}`
   }
 
-  static async Update(event, update) {
-    if (update.inline_query) {await onInline(event, update.inline_query)}
-    if ('message' in update) {await onMessage(event, update.message)}
+  static async Update(request, env, ctx, update) {
+    if (update.inline_query) {await onInline(request, env, ctx, update.inline_query)}
+    if ('message' in update) {await onMessage(request, env, ctx, update.message)}
   }
 }
 
 // ---------- Inline Listener ---------- // 
 
-async function onInline(event, inline) {
+async function onInline(request, env, ctx, inline) {
   let  fID; let fName; let fType; let fSize; let fLen;
+  const config = getConfig(env);
 
-  if (!PUBLIC_BOT && inline.from.id != BOT_OWNER) {
+  if (!config.PUBLIC_BOT && inline.from.id != config.BOT_OWNER) {
     const buttons = [[{ text: "Source Code", url: "https://github.com/vauth/filestream-cf" }]];
-    return await Bot.answerInlineArticle(inline.id, "Access forbidden", "Deploy your own filestream-cf.", "*❌ Access forbidden.*\n📡 Deploy your own [filestream-cf](https://github.com/vauth/filestream-cf) bot.", buttons)
+    return await Bot.answerInlineArticle(inline.id, "Access forbidden", "Deploy your own filestream-cf.", "*❌ Access forbidden.*\n📡 Deploy your own [filestream-cf](https://github.com/vauth/filestream-cf) bot.", buttons, '1', env)
   }
  
-  try {await Cryptic.deHash(inline.query)} catch {
+  try {await Cryptic.deHash(inline.query, config.SIA_SECRET)} catch {
     const buttons = [[{ text: "Source Code", url: "https://github.com/vauth/filestream-cf" }]];
-    return await Bot.answerInlineArticle(inline.id, "Error", ERROR_407.description, ERROR_407.description, buttons)
+    return await Bot.answerInlineArticle(inline.id, "Error", ERROR_407.description, ERROR_407.description, buttons, '1', env)
   }
 
-  const channel_id = BOT_CHANNEL;
-  const message_id = await Cryptic.deHash(inline.query);
-  const data = await Bot.editMessage(channel_id, message_id, await UUID());
+  const channel_id = config.BOT_CHANNEL;
+  const message_id = await Cryptic.deHash(inline.query, config.SIA_SECRET);
+  const data = await Bot.editMessage(channel_id, message_id, await UUID(), env);
 
   if (data.error_code){
     const buttons = [[{ text: "Source Code", url: "https://github.com/vauth/filestream-cf" }]];
-    return await Bot.answerInlineArticle(inline.id, "Error", data.description, data.description, buttons)
+    return await Bot.answerInlineArticle(inline.id, "Error", data.description, data.description, buttons, '1', env)
   }
 
   if (data.document){
@@ -342,20 +364,20 @@ async function onInline(event, inline) {
 
   if (fType == "image/jpg") {
     const buttons = [[{ text: "Send Again", switch_inline_query_current_chat: inline.query }]]
-    return await Bot.answerInlinePhoto(inline.id, fName || "undefined", fID, buttons)
+    return await Bot.answerInlinePhoto(inline.id, fName || "undefined", fID, buttons, '1', env)
   } else {
     const buttons = [[{ text: "Send Again", switch_inline_query_current_chat: inline.query }]];
-    return await Bot.answerInlineDocument(inline.id, fName || "undefined", fID, fType, buttons)
+    return await Bot.answerInlineDocument(inline.id, fName || "undefined", fID, fType, buttons, '1', env)
   }
-
 }
 
 // ---------- Message Listener ---------- // 
 
-async function onMessage(event, message) {
+async function onMessage(request, env, ctx, message) {
   let fID; let fName; let fSave; let fType;
-  let url = new URL(event.request.url);
-  let bot = await Bot.getMe();
+  let url = new URL(request.url);
+  let bot = await Bot.getMe(env);
+  const config = getConfig(env);
 
   if (message.via_bot && message.via_bot.username == bot.username) {
     return
@@ -367,62 +389,62 @@ async function onMessage(event, message) {
 
   if (message.text && message.text.startsWith("/start ")) {
     const file = message.text.split("/start ")[1]
-    try {await Cryptic.deHash(file)} catch {return await Bot.sendMessage(message.chat.id, message.message_id, ERROR_407.description)}
+    try {await Cryptic.deHash(file, config.SIA_SECRET)} catch {return await Bot.sendMessage(message.chat.id, message.message_id, ERROR_407.description, [], env)}
 
-    const channel_id = BOT_CHANNEL;
-    const message_id = await Cryptic.deHash(file);
-    const data = await Bot.editMessage(channel_id, message_id, await UUID());
+    const channel_id = config.BOT_CHANNEL;
+    const message_id = await Cryptic.deHash(file, config.SIA_SECRET);
+    const data = await Bot.editMessage(channel_id, message_id, await UUID(), env);
 
     if (data.document) {
       fID = data.document.file_id;
-      return await Bot.sendDocument(message.chat.id, fID)
+      return await Bot.sendDocument(message.chat.id, fID, env)
     } else if (data.audio) {
       fID = data.audio.file_id;
-      return await Bot.sendDocument(message.chat.id, fID)
+      return await Bot.sendDocument(message.chat.id, fID, env)
     } else if (data.video) {
       fID = data.video.file_id;
-      return await Bot.sendDocument(message.chat.id, fID)
+      return await Bot.sendDocument(message.chat.id, fID, env)
     } else if (data.photo) {
       fID = data.photo[data.photo.length - 1].file_id;
-      return await Bot.sendPhoto(message.chat.id, fID)
+      return await Bot.sendPhoto(message.chat.id, fID, env)
     } else {
-      return Bot.sendMessage(message.chat.id, message.message_id, "Bad Request: File not found")
+      return Bot.sendMessage(message.chat.id, message.message_id, "Bad Request: File not found", [], env)
     }
   }
 
-  if (!PUBLIC_BOT && message.chat.id != BOT_OWNER) {
+  if (!config.PUBLIC_BOT && message.chat.id != config.BOT_OWNER) {
     const buttons = [[{ text: "Source Code", url: "https://github.com/vauth/filestream-cf" }]];
-    return Bot.sendMessage(message.chat.id, message.message_id, "*❌ Access forbidden.*\n📡 Deploy your own [filestream-cf](https://github.com/vauth/filestream-cf) bot.", buttons)
+    return Bot.sendMessage(message.chat.id, message.message_id, "*❌ Access forbidden.*\n📡 Deploy your own [filestream-cf](https://github.com/vauth/filestream-cf) bot.", buttons, env)
   }
 
   if (message.document){
     fID = message.document.file_id;
     fName = message.document.file_name;
     fType = message.document.mime_type.split("/")[0]
-    fSave = await Bot.sendDocument(BOT_CHANNEL, fID)
+    fSave = await Bot.sendDocument(config.BOT_CHANNEL, fID, env)
   } else if (message.audio) {
     fID = message.audio.file_id;
     fName = message.audio.file_name;
     fType = message.audio.mime_type.split("/")[0]
-    fSave = await Bot.sendDocument(BOT_CHANNEL, fID)
+    fSave = await Bot.sendDocument(config.BOT_CHANNEL, fID, env)
   } else if (message.video) {
     fID = message.video.file_id;
     fName = message.video.file_name;
     fType = message.video.mime_type.split("/")[0]
-    fSave = await Bot.sendDocument(BOT_CHANNEL, fID)
+    fSave = await Bot.sendDocument(config.BOT_CHANNEL, fID, env)
   } else if (message.photo) {
     fID = message.photo[message.photo.length - 1].file_id;
     fName = message.photo[message.photo.length - 1].file_unique_id + '.jpg';
     fType = "image/jpg".split("/")[0];
-    fSave = await Bot.sendPhoto(BOT_CHANNEL, fID)
+    fSave = await Bot.sendPhoto(config.BOT_CHANNEL, fID, env)
   } else {
     const buttons = [[{ text: "Source Code", url: "https://github.com/vauth/filestream-cf" }]];
-    return Bot.sendMessage(message.chat.id, message.message_id, "Send me any file/video/gif/audio *(t<=4GB, e<=20MB)*.", buttons)
+    return Bot.sendMessage(message.chat.id, message.message_id, "Send me any file/video/gif/audio *(t<=4GB, e<=20MB)*.", buttons, env)
   }
 
-  if (fSave.error_code) {return Bot.sendMessage(message.chat.id, message.message_id, fSave.description)}
+  if (fSave.error_code) {return Bot.sendMessage(message.chat.id, message.message_id, fSave.description, [], env)}
 
-  const final_hash = await Cryptic.Hash(fSave.message_id);
+  const final_hash = await Cryptic.Hash(fSave.message_id, config.SIA_SECRET);
   const final_link = `${url.origin}/?file=${final_hash}`
   const final_stre = `${url.origin}/?file=${final_hash}&mode=inline`
   const final_tele = `https://t.me/${bot.username}/?start=${final_hash}`
@@ -433,5 +455,5 @@ async function onMessage(event, message) {
   ];
 
   let final_text = `*🗂 File Name:* \`${fName}\`\n*⚙️ File Hash:* \`${final_hash}\``
-  return Bot.sendMessage(message.chat.id, message.message_id, final_text, buttons)
+  return Bot.sendMessage(message.chat.id, message.message_id, final_text, buttons, env)
 }

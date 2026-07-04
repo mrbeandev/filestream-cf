@@ -3,7 +3,27 @@ File To Link Telegram Bot Using Cloudflare Workers.
 
 <br>
 
-## 🗂 Variables
+## 🗂 Variables & Environment Setup
+You can either hardcode variables directly in the script or define them as Cloudflare Workers Environment Variables (recommended).
+
+### Option A: Environment Variables (Recommended)
+Add them to your `wrangler.toml` under `[vars]` or configure them via the Cloudflare Dashboard (Settings > Variables).
+
+```toml
+[vars]
+BOT_TOKEN = "your_bot_token"
+BOT_WEBHOOK = "/endpoint"
+BOT_SECRET = "your_bot_secret"
+BOT_OWNER = "123456789"
+BOT_CHANNEL = "-100123456789"
+SIA_SECRET = "your_sia_secret"
+PUBLIC_BOT = "false"
+```
+
+*Note: Environment variables will always take precedence over hardcoded values in `worker.js`.*
+
+### Option B: Hardcoded (Fallback)
+If environment variables are not set, the bot falls back to the top of `worker.js`:
 ```javascript
 const BOT_TOKEN = "BOT_TOKEN"; // Insert your bot token.
 const BOT_WEBHOOK = "/endpoint"; // Let it be as it is.
