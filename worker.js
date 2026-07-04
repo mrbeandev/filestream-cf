@@ -50,7 +50,16 @@ async function handleRequest(request, env, ctx) {
     if (url.pathname === config.BOT_WEBHOOK) {return Bot.handleWebhook(request, env, ctx)}
     if (url.pathname === '/registerWebhook') {return Bot.registerWebhook(request, url, env)}
     if (url.pathname === '/unregisterWebhook') {return Bot.unregisterWebhook(request, env)}
-    if (url.pathname === '/getMe') {return new Response(JSON.stringify(await Bot.getMe(env)), {headers: HEADERS_ERRR, status: 202})}
+    if (url.pathname === '/getMe') {
+        const config = getConfig(env);
+        console.log("--- DEBUG START ---");
+        console.log("Keys present in env object:", Object.keys(env));
+        console.log("BOT_TOKEN status:", config.BOT_TOKEN === "BOT_TOKEN" ? "Using hardcoded fallback" : "Using environment variable (length: " + config.BOT_TOKEN.length + ")");
+        console.log("BOT_SECRET status:", config.BOT_SECRET === "BOT_SECRET" ? "Using hardcoded fallback" : "Using environment variable (length: " + config.BOT_SECRET.length + ")");
+        console.log("BOT_CHANNEL:", config.BOT_CHANNEL);
+        console.log("--- DEBUG END ---");
+        return new Response(JSON.stringify(await Bot.getMe(env)), {headers: HEADERS_ERRR, status: 202});
+    }
 
     if (!file) {return Raise(ERROR_404, 404);}
     if (!["attachment", "inline"].includes(mode)) {return Raise(ERROR_408, 404)}
