@@ -29,7 +29,8 @@ function getConfig(env) {
         BOT_OWNER: env.BOT_OWNER ? parseInt(env.BOT_OWNER, 10) : BOT_OWNER,
         BOT_CHANNEL: env.BOT_CHANNEL ? parseInt(env.BOT_CHANNEL, 10) : BOT_CHANNEL,
         SIA_SECRET: env.SIA_SECRET || SIA_SECRET,
-        PUBLIC_BOT: env.PUBLIC_BOT !== undefined ? (env.PUBLIC_BOT === 'true' || env.PUBLIC_BOT === true) : PUBLIC_BOT
+        PUBLIC_BOT: env.PUBLIC_BOT !== undefined ? (env.PUBLIC_BOT === 'true' || env.PUBLIC_BOT === true) : PUBLIC_BOT,
+        TELEGRAM_API_URL: env.TELEGRAM_API_URL || "https://api.telegram.org"
     };
 }
 
@@ -301,7 +302,7 @@ class Bot {
 
   static async fetchFile(file_path, env) {
       const config = getConfig(env);
-      const file = await fetch(`https://api.telegram.org/file/bot${config.BOT_TOKEN}/${file_path}`);
+      const file = await fetch(`${config.TELEGRAM_API_URL}/file/bot${config.BOT_TOKEN}/${file_path}`);
       return await file.arrayBuffer()
   }
 
@@ -309,7 +310,7 @@ class Bot {
       const config = getConfig(env);
       let query = ''
       if (params) {query = '?' + new URLSearchParams(params).toString()}
-      return `https://api.telegram.org/bot${config.BOT_TOKEN}/${methodName}${query}`
+      return `${config.TELEGRAM_API_URL}/bot${config.BOT_TOKEN}/${methodName}${query}`
   }
 
   static async Update(request, env, ctx, update) {
