@@ -1,4 +1,4 @@
-// ---------- Insert Your Data ---------- //
+// ---------- Insert Your Data (Last updated: 2026-07-04) ---------- //
 
 const BOT_TOKEN = "BOT_TOKEN"; // Insert your bot token.
 const BOT_WEBHOOK = "/endpoint"; // Let it be as it is.
